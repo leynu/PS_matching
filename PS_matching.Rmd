@@ -1,0 +1,950 @@
+---
+title: "Intuitive understanding of Propensity Score"
+author: "Leyla Nunez"
+#date: "2016/12/12 (updated: `r Sys.Date()`)"
+date: "2019-10-15"
+output:
+  xaringan::moon_reader:
+    css: [rutgers, rutgers-fonts, my-css.css]
+    lib_dir: libs
+    nature:
+      highlightStyle: github
+      highlightLines: true
+      countIncrementalSlides: false
+---
+
+
+
+```{r setup, include=FALSE}
+options(htmltools.dir.version = FALSE)
+
+#devtools::install_github("yihui/xaringan")
+
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+
+library(tableone)
+#library(Matching)
+
+library(MatchIt)
+library(broom)
+
+# my three red-ish colors
+my_col_1 <- "#f5b6c7"
+my_col_2 <- "#f089a5"
+my_col_3 <- "#e9466f"
+```
+
+```{r include=FALSE}
+cases <- tibble(
+  city = 1:4, 
+  T = 1, 
+  BR = c(10, 15, 22, 19)
+)
+
+cases2 <- tibble(
+  city = 1:4, 
+  T = 1, 
+  BR = c(10, 15, 22, 19),
+  povrate = c(0.5, 0.6, 0.7, 0.6),
+  teachers = c(1.5, 2.5, 1.5, 2.5)
+)
+
+control <- tibble(
+  city = 5:9, 
+  T = 0, 
+  BR = c(25, 19, 4, 8, 6)
+)
+
+control2 <- tibble(
+  city = 5:9, 
+  T = 0, 
+  BR = c(25, 19, 4, 8, 6),
+  povrate = c(0.6, 0.5, 0.1, 0.3, 0.2),
+  teachers = c(1.5, 2.5, 4.5, 5.5, 4.5)
+)
+
+data <-rbind(cases2, control2)
+
+```
+
+
+
+class: middle, center
+
+# GOAL
+
+## **Hopefully give you some intuitional understanding of Propensity score (matching)**
+
+
+---
+
+# Our hypothetical example
+
+- Suppose UN supports a program to build *High Schools* in poor cities in Nigeria, Africa
+
+- The aim was to reduce *Teen Pregnancies*
+
+- `T` - treatment variable
+    - `T=1` - a city that got a new high school
+    - `T=0` - a city that didn't 
+  
+- The cities were not selected at random 
+
+- `BR` - Birth rate, our outcome of interest
+  - The birth rate is measured in babies born to women aged 15–19 years per 1000 women, approximately two years after the high schools opened.
+
+---
+
+# How did the program affect teen pregnancies?
+
+--
+
+```{r echo=FALSE}
+kable(cases) %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16)
+```
+
+--
+
+```{r echo=FALSE}
+kable(control) %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16)
+```
+
+- Compare the average birth rate in the 'treatment' city to that in the control city.
+
+--
+
+$$\frac{10+15+22+19}{4}- \frac{25+19+4+8+6}{5} = 4.1$$
+- Birth rate did *increase*?! 
+
+---
+# What/why?
+
+- Cities that got the high schools almost certainly had *high $\Uparrow$ BR before the program* was implemented
+- If we had some information about the *pre-program BR*
+
+  - We could have compared changes in the BR in the treatment group versus the changes in the control group
+  
+  - BUT suppose we don't have that information
+
+- Our two samples may differ in terms of other factors, other than the fact that they were 'treated'
+
+> **Selection bias (SB)**  
+> Individuals who experience a certain treatment often vary from individuals who don't recieved the treatment 
+
+- *4.1* reflects both the *effect of treatment* and some degree of *SB*
+
+- A problem in any *observational studies*
+  
+---
+# In a perfect world 
+
+- We need to get the two groups to look as similar as possible
+  - so that we can isolate the effect of 'treatment' (exposure)
+ 
+- **Randomized controlled trial (RCT)**
+  - Is the most powerful tool in order to achieve that
+  
+  - Provides groups comparable with respect of known and unknown confounders (variables)
+  
+![](https://media.giphy.com/media/l0IukZ771bIyeJcS4/giphy.gif)
+
+- *Cities were not selected at random!*
+
+---
+# Additional information available to us ...
+
+- Two variables: 
+  - `povrate` - Poverty rate in the cities
+  - `teachers` - The number of teachers per capita before the program was implemented 
+
+```{r echo=FALSE}
+kable(cases2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16)
+
+kable(control2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16)
+```
+--
+
+- *Take a moment to compare the treatment and control groups using those 2 variables *
+
+
+---
+# Observed information ...
+
+```{r echo=FALSE}
+kable(cases2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16)
+
+kable(control2) %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16)
+```
+
+- On average the treatment group have 
+
+  - higher poverty rate `r mean(cases2$povrate)` (`r mean(control2$povrate)`) and 
+  
+  - fewer teachers per capita `r mean(cases2$teachers)` (`r mean(control2$teachers)`)
+
+
+---
+# We need to get the two groups to look as similar as possible
+
+### The basic idea
+
+1. *Create a new control group*
+
+  - For each observation in the treatment group, 
+  - select the control observation that looks most like it - based on the variables
+
+2. *Compute the treatment effect*
+
+  - Compare the average outcome in the treatment group with the average outcome in the new control group
+
+
+---
+# Lets try with just one variable
+
+- In a real study, you will have more cases and controls
+
+```{r echo=FALSE}
+cases2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(1, background = my_col_1)
+
+control2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(2, background = my_col_1)
+```
+---
+# Lets try with just one variable
+
+- In a real study, you will have more cases and controls
+
+```{r echo=FALSE}
+
+cases2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(1, background = my_col_1) %>%
+  row_spec(2, background = my_col_2) 
+
+control2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(2, background = my_col_1) %>%
+  row_spec(1, background = my_col_2) 
+```
+
+---
+# Lets try with just one variable
+
+- In a real study, you will have more cases and controls
+
+```{r echo=FALSE}
+cases2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(1, background = my_col_1) %>%
+  row_spec(2:4, background = my_col_2) 
+
+control2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(2, background = my_col_1) %>%
+  row_spec(1, background = my_col_2) 
+```
+
+- city *1* -> city *6*
+- city *2* -> city *5*
+- city *3* -> city *5*
+- city *4* -> city *5*
+  - Using the same controls *many* times - Not unusual!
+
+---
+# Lets try with just one variable
+
+- In a real study, you will have more cases and controls
+
+```{r echo=FALSE}
+cases2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(c(2, 4), background = my_col_2) 
+
+control2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(2, background = my_col_2)
+```
+
+
+- city *6* could have been matched to multiple treatment observations 
+  - city *2*
+  - city *4*
+  - No exact match but may still be 👌
+
+---
+
+# Lets try with just one variable
+
+```{r echo=FALSE}
+cases2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(1, background = my_col_1) %>%
+  row_spec(2:4, background = my_col_2) 
+
+control2 %>%
+  select(-teachers) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(2, background = my_col_1) %>%
+  row_spec(1, background = my_col_2) %>%
+  row_spec(3:5, background = my_col_3)
+
+```
+
+- Many control observations (city *7*-*9*) might not match to any treatment observations 
+    - They have much lower poverty rates 
+
+---
+# Multiple background characteristics
+
+- *Gets a lot more complicated! *
+- city 1: Should we match it with city 5?
+
+```{r echo=FALSE}
+cases2 %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(1, background = my_col_1)  
+
+control2 %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(1, background = my_col_1) 
+```
+
+---
+# Multiple background characteristics
+
+- *Gets a lot more complicated! *
+- city 1: Should we match it with city 5? or city 6?
+
+```{r echo=FALSE}
+cases2 %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(1, background = my_col_1)  
+
+control2 %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  row_spec(2, background = my_col_1) 
+```
+
+- Which variable was more important for WHO 🤷?
+
+
+---
+
+class: inverse, middle, center
+
+# How do you actually match treatment observations to controls?
+
+---
+
+# Propensity score 
+
+> ** Propensity score **
+>
+> Conditional probability that an individual will be given the treatment just based on their background characteristics
+
+$$P(T=1 \text{  |  }X_1, X_2, ... X_p)$$
+- $P(T=1  \text{  |  }$ 
+  - Probability of treatment given ...
+  
+- $X_1, X_2, ... X_p$ 
+  - all our background characteristics that might influence selection of a city as a 'treatment' city  
+  - *povrate*
+  - *teachers*
+
+---
+
+# Propensity score calculation
+
+
+- The likelihood that a city would have been in the 'treatment' group 
+
+- A value between *0* and *1*
+
+```{r echo=FALSE}
+
+cases2 %>%
+  mutate(PScores = "?") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  column_spec(6, background = my_col_1)
+
+control2 %>%
+  mutate(PScores = "?") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 16) %>%
+  column_spec(6, background = my_col_1)
+
+```
+
+
+
+---
+# Propensity score calculation
+
+- Use **logistic regression** to estimate all the needed $\beta$ coefficients
+
+$$ P(T=1 \text{  |  } povrate \text{ & } teachers) = \beta_0 + \beta_1 \times povrate + \beta_2 \times teachers$$
+```{r}
+pscores.model <- glm(T ~ povrate + teachers, # the model
+                     family = binomial(link='logit'), #logistic regression
+                     data = data) # our data set
+```
+
+--
+
+The calculated coefficients
+
+```{r echo=FALSE}
+# The calculated coefficients
+pscores.model$coefficients
+```
+
+--
+
+$$ P(T=1 \text{  |  } povrate \text{ & } teachers) = -7.45 + 14.50 \times povrate -0.09 \times teachers$$
+
+Use the equation to compute the *predicted probability of treatment* using the background characteristics 
+
+---
+
+# Propensity score
+
+$$ P(T=1 \text{  |  } povrate \text{ & } teachers) = -7.45 + 14.50 \times povrate -0.09 \times teachers$$
+
+
+
+```{r echo=FALSE}
+# Get the PS:s
+data$PScores <- pscores.model$fitted.values
+
+data  %>%
+  filter(T==1) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  column_spec(6, background = my_col_1)
+
+data  %>%
+  filter(T==0) %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  column_spec(6, background = my_col_1)
+
+```
+
+
+---
+# Lets match using the propensity score
+
+
+
+```{r echo=FALSE}
+
+data  %>%
+  filter(T==1) %>%
+  select("city", "T", "BR", "PScores") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  row_spec(1, background = my_col_1) 
+
+data  %>%
+  filter(T==0) %>%
+  select("city", "T", "BR", "PScores") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  row_spec(2, background = my_col_1) 
+
+```
+
+---
+# Lets match using the propensity score
+
+
+
+```{r echo=FALSE}
+
+data  %>%
+  filter(T==1) %>%
+  select("city", "T", "BR", "PScores") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  row_spec(1, background = my_col_1) %>%
+  row_spec(2:4, background = my_col_2) 
+
+data  %>%
+  filter(T==0) %>%
+  select("city", "T", "BR", "PScores") %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  row_spec(2, background = my_col_1) %>%
+  row_spec(1, background = my_col_2) 
+
+```
+
+---
+# Balance in the covariates
+
+
+
+```{r echo=FALSE}
+
+ps_data_t1 <- data  %>%
+  filter(T==1) 
+
+ps_data_t1 %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  row_spec(1, background = my_col_1) %>%
+  row_spec(2:4, background = my_col_2) 
+
+ps_data_t2 <- data %>%
+  filter(T==0 & city %in% c(5,6))
+
+ps_data_t2 %>%
+  kable() %>%
+  kable_styling(bootstrap_options = "striped", full_width = T, position = "left", font_size = 14) %>%
+  row_spec(2, background = my_col_1) %>%
+  row_spec(1, background = my_col_2) 
+
+```
+
+
+- Similar poverty rate `r mean(ps_data_t1$povrate)` (`r mean(ps_data_t2$povrate)`) and 
+
+- Same number teachers per capita `r mean(ps_data_t1$teachers)` (`r mean(ps_data_t2$teachers)`)
+
+--
+
+** What was the effect of treatment on BR?**
+
+--
+
+$$\frac{10+15+22+19}{4}- \frac{25+19+19+19}{4} = -4$$
+
+- The effect of constructing new high schools has led to an average birth rate reduction of 4 babies per 1000 women
+
+---
+
+# That is how PS works!
+
+![](https://media.giphy.com/media/hkMXte9dBJFfO/giphy.gif)
+
+
+---
+
+class: inverse, middle, center
+
+# Another example 
+
+---
+# lalonde
+
+- The National Supported Work Demonstration (NSW) was a temporary employment program designed to help disadvantaged workers move into the labor market 
+
+
+```{r include=FALSE}
+#Now load the lalonde data (which is in the MatchIt package):
+data(lalonde)
+```
+
+
+```{r echo=FALSE}
+str(lalonde)
+```
+
+- `r table(lalonde$treat)[2]` cases and `r table(lalonde$treat)[1]` controls
+
+- *We want to evaluate the effect of the NSW program on income*
+
+---
+# Look at the data *BEFORE* matching
+
+- **Standardized differences (smd) ** to check covariate balance
+
+- For continous variables: 
+  - e.g. *age*, *educ* - the number of years of schooling
+  
+  - the difference in means between groups, divided by the (pooled) standard deviation
+  
+$$smd = \frac{\bar{X}_{treatment} -  \bar{X}_{control}}{ \sqrt{ \frac{s^2_{treatment} -s^2_{control}}{2}}}$$
+
+> Rules of thumb:   
+>   - values *< 0.1* indicate adequate balance  
+>   - value *0.1 - 0.2* are not too alarming  
+>   - *> 0.2* indicate serious imbalance  
+
+---
+
+# SMD before matching
+
+- *re78* - is excluded since it is out outcome variable of interest
+- *429* controls versus *185* treated patients
+
+
+```{r echo=FALSE}
+xvars <- c("age", "educ", "black", "hispan", "married", "nodegree", "re74", "re75")
+table1 <- CreateTableOne(vars = xvars,
+  strata = "treat",
+  data = lalonde,
+  test = FALSE)
+
+print(table1, smd = TRUE)
+```
+
+     
+- 👎🚫 *Imbalance!!!* 🚫️👎️
+  - A large difference in covariate distribution
+  
+  - We need balance! $\Rightarrow$ let's do  *PS matching*
+
+---
+# Matching methods
+
+- *Exact match*? 
+  - We may not find cases/controls with the same PS
+  
+- *Greedy (nearest-neighbor) matching*
+  - As soon as a match is made between two objects that match is kept even if a 'better' match could be found in the data
+  - Tries to include as many cases as possible 
+  - Trade-offs: No perfect balance in covariates!
+  
+- *Caliper matching*
+  - Matches two subjects within a given range (**caliper**)
+  
+- *Optimal matching*
+  - The algorithm is able to reconsider a match
+  - Is going to minimize the total distance 
+  - Involve a lot of computation
+
+---
+# Matching methods
+
+- *One-to-one matching*
+
+
+- *One-to-many matching*
+  - One case is matched with several controls
+  - Useful if you have a large control group
+
+--
+
+- *without* replacement
+    - ones a match has been made those subjects can not be used ones again
+- *with* replacement
+    - the same control subject can be matched to several cases 
+
+
+---
+# Step 1: Calculate PS
+
+- Use a logistic regression model, where the outcome is *treatment*
+
+- Include the 8 confounding variables in the model as predictors
+
+```{r}
+# fit a PS model - logistic regression
+psmodel <- glm(treat ~ age + educ + black + hispan + married #<<
+                           + nodegree + re74 + re75, #<<
+  family = binomial(),
+  data = lalonde)
+lalonde$pscore <- psmodel$fitted.values
+head(lalonde[, c(1:9,11)])
+```
+
+---
+
+# Step 2: Examine PS values *BEFORE* matching 
+
+.pull-left[
+
+```{r echo=FALSE}
+
+ggplot(lalonde, aes(x=pscore, fill=as.factor(treat))) +
+  geom_density(alpha=0.4) +
+  scale_fill_discrete(name = " ", labels = c("Control", "Treatment")) + 
+  scale_x_continuous(limits = c(0, 1))
+
+```
+
+]
+
+.pull-right[
+
+- Cases may be excluded!
+  - The price we have to pay for matching 
+  
+- Cases with extrem PS values
+  - *very high PS*, close to *1* 
+  - *very low PS*, close to *0*
+
+]
+
+---
+
+#Step 3: Do the matching
+
+- 1:1 matching
+- without replacement
+- no caliper
+
+```{r, highlight.output=c(6,7), echo=FALSE}
+psmatch <- Matching::Match(Tr = lalonde$treat,
+  M = 1,
+  X = lalonde$pscore,
+  replace = FALSE)
+
+matched <- lalonde[unlist(psmatch[c("index.treated", "index.control")]), ]
+
+matchedtab1 <- CreateTableOne(vars = xvars,
+  strata = "treat",
+  data = matched,
+  test = FALSE)
+
+print(matchedtab1, smd = TRUE)
+```
+
+- *185* cases and *185* controls
+
+- 👎💩 *Still looks bad!!* 💩👎️
+
+---
+# Re-do the matching!
+
+- 1:1 matching
+- without replacement
+- *caliper = 0.1*
+
+```{r, highlight.output=c(11), echo=FALSE}
+
+set.seed(931139)
+psmatch2 <- Matching::Match(Tr = lalonde$treat,
+  M = 1,
+  X = lalonde$pscore,
+  replace = FALSE,
+  caliper = 0.1)
+
+matched2 <- lalonde[unlist(psmatch2[c("index.treated", "index.control")]), ]
+
+matchedtab2 <- CreateTableOne(vars = xvars,
+  strata = "treat",
+  data = matched2,
+  test = FALSE)
+
+print(matchedtab2, smd = TRUE)
+
+```
+
+- *111* cases and *111* controls
+- 👍️ *Not perfect but much better!* 👍️
+
+- *Overt (measured) bias* would occur if you had imbalance and you carried out your outcome analysis anyway
+
+---
+
+# 2nd matching attempt
+
+- 1:1 matching
+- without replacement
+- *caliper = 0.1*
+
+```{r, highlight.output=c(11), echo=FALSE}
+
+psmatch3 <- Matching::Match(Tr = lalonde$treat,
+  M = 1,
+  X = lalonde$pscore,
+  replace = FALSE,
+  caliper = 0.1)
+
+matched3 <- lalonde[unlist(psmatch3[c("index.treated", "index.control")]), ]
+
+matchedtab3 <- CreateTableOne(vars = xvars,
+  strata = "treat",
+  data = matched3,
+  test = FALSE)
+
+print(matchedtab3, smd = TRUE)
+
+```
+
+
+
+```{r ,eval=FALSE}
+warning("Do NOT play with the data!")
+```
+  
+---
+
+# Step 4: Compare PS after matching
+
+```{r echo=FALSE, out.width = '60%'}
+# Use semi-transparent fill
+ggplot(matched2, aes(x=pscore, fill=as.factor(treat))) +
+  geom_density(alpha=0.4)+
+  scale_fill_discrete(name = " ", labels = c("Control", "Treatment")) + scale_x_continuous(limits = c(0, 1))
+
+```
+
+---
+
+# Step 5: Carry out the outcome analysis
+
+- If out matching algorithm has done a good job!
+  - We have *balance* in our covariates 
+  - Compare *re78* - real earnings in 1978 - in the treatment group versus the control group
+
+```{r}
+lm_model1 <- lm(re78 ~ treat,  data = matched2) #<<
+tidy(lm_model1)
+```
+
+- *p-values = 0.141*, we have no evidence that ** NSW program had any effect on income **
+
+---
+
+# Traditional covariate adjustment
+
+- *Add all covaraies into the model*
+  - Using the original data 
+
+```{r, highlight.output=c(5, 7, 12, 13)}
+lm_model2 <- lm(re78 ~ treat + age + educ + black + hispan +  
+                       married + nodegree + re74 + re75,  data = lalonde)
+tidy(lm_model2)
+```
+
+- **POS** - Shows you the effect of *all* covariates not just the *treatment*
+- **NEG** - May not be suitable with many covariates in small studies
+
+---
+# PS covariate adjustment
+
+- Use of PS as the only covariate in the model
+- Alternative methods are available - adding all covariates + PS
+
+```{r}
+lm_model3 <- lm(re78 ~ treat + pscore, data = matched2) #<<
+
+tidy(lm_model3)
+```
+
+- We have no evidence of treatment effect!
+
+---
+
+# Doubly robust methods 
+
+- *Controll for unbalanced covariates*
+  - *re75* - real earnings in 1975 in dollars
+
+```{r, highlight.output=c(6)}
+lm_model4 <- lm(re78 ~ treat + re75, data = matched2) #<<
+
+tidy(lm_model4)
+```
+
+- We have no evidence of treatment effect!
+
+
+
+
+---
+
+class: inverse, middle, center
+
+### What we estimated is NOT the average treatment effect but the average treatment effect on the treated (ATT). 
+### Our conclusions can only be generalised to cases that look like the treatment group   
+
+---
+
+# Limitations: Hidden bias
+
+### We can only expect to achieve balance on *observed*  variables
+
+> **Hidden bias** 
+> would occur if there is *imbalance* on *unobserved* variables and
+> these unobserved variables are actually confounders
+
+- We still have to worry about the possibility that our observations differ on other *unobserved* ways that we haven't accounted for by the PS 
+
+---
+
+# Advantages and disadvantages of PS matching
+
+### POS
+- Provides excellent covariate balance in most circumstances
+- Simple to analyse, present and interpret
+
+### NEG
+
+- Some patients are unmatched $\Rightarrow$ important information being excluded from the analysis
+- Matching tended to give less precise estimates in some cases
+
+---
+
+# Sensitivity analysis 
+
+- We typically believe that there is some degree of *unmeasured confounding* 🙈
+
+### Are the conclusions we're making *sensitive* to just *minor violations* of our key assumption or is it *very sensitive* to *violations*
+
+
+For example:
+  - *Change from statistically significant to not*
+    - How much hidden bias would they have to be before we would *not* have a significant result?
+
+  - *Change in direction of effect*
+    - How much bias would there have to be before the sign actually changed?
+
+
+---
+class: inverse, middle, center
+
+
+### Propensity score methods are NOT necessarily superior to conventional covariate adjustment,   and care should be taken to select the most suitable method.
+
+---
+
+class: inverse, middle, center
+
+
+![](https://media.giphy.com/media/3ohs7JG6cq7EWesFcQ/giphy.gif)
+
+.footnote[
+Slides created via the R package [xaringan](https://github.com/yihui/xaringan) 
+]
+
+
+
